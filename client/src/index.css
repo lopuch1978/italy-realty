@@ -1,0 +1,161 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    /* Warm Tuscan / Italian countryside palette */
+    --background: 38 28% 96%;
+    --foreground: 30 20% 12%;
+    --card: 38 22% 98%;
+    --card-foreground: 30 20% 12%;
+    --popover: 38 22% 98%;
+    --popover-foreground: 30 20% 12%;
+    --primary: 25 60% 38%;         /* Terracotta */
+    --primary-foreground: 38 28% 96%;
+    --secondary: 110 18% 28%;      /* Olive green */
+    --secondary-foreground: 38 28% 96%;
+    --muted: 38 15% 90%;
+    --muted-foreground: 30 10% 48%;
+    --accent: 25 55% 92%;          /* Light terracotta tint */
+    --accent-foreground: 25 60% 30%;
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 98%;
+    --border: 38 12% 84%;
+    --input: 38 12% 84%;
+    --ring: 25 60% 38%;
+    --radius: 0.5rem;
+
+    /* Custom */
+    --tuscan-gold: 43 72% 52%;
+    --tuscan-stone: 38 12% 72%;
+    --olive: 83 25% 38%;
+    --sky: 200 55% 62%;
+  }
+
+  .dark {
+    --background: 30 15% 8%;
+    --foreground: 38 20% 88%;
+    --card: 30 14% 11%;
+    --card-foreground: 38 20% 88%;
+    --popover: 30 14% 11%;
+    --popover-foreground: 38 20% 88%;
+    --primary: 25 55% 52%;
+    --primary-foreground: 30 15% 8%;
+    --secondary: 110 18% 38%;
+    --secondary-foreground: 38 20% 88%;
+    --muted: 30 12% 18%;
+    --muted-foreground: 38 10% 58%;
+    --accent: 25 30% 20%;
+    --accent-foreground: 25 55% 70%;
+    --destructive: 0 63% 45%;
+    --destructive-foreground: 0 0% 98%;
+    --border: 30 10% 22%;
+    --input: 30 10% 22%;
+    --ring: 25 55% 52%;
+  }
+}
+
+@layer base {
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  html {
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+    scroll-behavior: smooth;
+  }
+
+  body {
+    background-color: hsl(var(--background));
+    color: hsl(var(--foreground));
+    font-family: 'Satoshi', 'Inter', sans-serif;
+    font-size: 1rem;
+    line-height: 1.6;
+    min-height: 100dvh;
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    font-family: 'Zodiak', 'Lora', Georgia, serif;
+    text-wrap: balance;
+    line-height: 1.2;
+  }
+
+  img, picture, video, canvas, svg { display: block; max-width: 100%; height: auto; }
+
+  input, button, textarea, select { font: inherit; color: inherit; }
+
+  button { cursor: pointer; }
+
+  :focus-visible {
+    outline: 2px solid hsl(var(--primary));
+    outline-offset: 3px;
+    border-radius: 4px;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+      animation-duration: 0.01ms !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+}
+
+/* Property card image placeholder */
+.property-img-placeholder {
+  background: linear-gradient(135deg, hsl(38 20% 88%), hsl(38 25% 82%));
+}
+
+/* Shimmer loading effect */
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+.skeleton-shimmer {
+  background: linear-gradient(90deg,
+    hsl(var(--muted)) 25%,
+    hsl(var(--background)) 50%,
+    hsl(var(--muted)) 75%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.5s infinite;
+}
+
+/* Badge new */
+.badge-new {
+  background: hsl(25 60% 38%);
+  color: white;
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  padding: 2px 8px;
+  border-radius: 9999px;
+}
+
+/* Pool badge */
+.badge-pool {
+  background: hsl(200 55% 62% / 0.15);
+  color: hsl(200 55% 35%);
+  border: 1px solid hsl(200 55% 62% / 0.3);
+}
+
+.dark .badge-pool {
+  background: hsl(200 55% 25% / 0.3);
+  color: hsl(200 70% 70%);
+  border-color: hsl(200 55% 45% / 0.3);
+}
+
+/* Card hover */
+.property-card {
+  transition: transform 150ms ease, box-shadow 150ms ease;
+}
+.property-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 28px hsl(30 20% 12% / 0.12);
+}
+
+.dark .property-card:hover {
+  box-shadow: 0 8px 28px hsl(0 0% 0% / 0.35);
+}
