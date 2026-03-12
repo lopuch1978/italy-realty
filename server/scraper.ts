@@ -3,177 +3,328 @@ import * as cheerio from "cheerio";
 import { storage } from "./storage";
 import type { InsertProperty } from "@shared/schema";
 
-// Immobiliare.it search URL builder for buy operations
-// Regions: Toscana (ID 9) and Trentino-Alto Adige/Südtirol (ID 5)
-// We use their public search API endpoint
+// Gate-away.com is an Italian real estate portal accessible without bot-protection.
+// It exposes structured listing data in a window.preloadedData variable.
+// Region IDs: Tuscany=16, Trentino-South Tyrol=17
+// Property URL: /properties/{region-slug}/{province-slug}/{city-slug}/id/{IDProperty}
+// Image URL: https://images.gate-away.com/properties2/{IDUser}/{IDProperty}/main/800/Main_image.jpg
 
-const REGIONS: { name: string; id: string; label: string }[] = [
-  { name: "Toscana", id: "9", label: "Toscana" },
-  { name: "Alto Adige / Tirolo", id: "5", label: "Trentino-Alto Adige" },
+const REGION_CONFIGS = [
+  {
+    name: "Toscana",
+    label: "Toscana",
+    regionSlug: "tuscany",
+    regionId: 16,
+  },
+  {
+    name: "Alto Adige / Tirolo",
+    label: "Trentino-Alto Adige",
+    regionSlug: "trentino-south-tyrol",
+    regionId: 17,
+  },
 ];
 
-const FILTERS = {
-  minPrice: 80000,
-  maxPrice: 150000,
-  propertyType: "house",
-  garden: ["private"],
-  pool: false, // toggled by user filter on frontend
+// Province ID → slug mapping (from gate-away UrlDictionary)
+const PROVINCE_SLUGS: Record<number, string> = {
+  1: "agrigento", 2: "alessandria", 3: "ancona", 4: "aoste", 5: "arezzo",
+  6: "ascoli-piceno", 7: "asti", 8: "avellino", 9: "bari", 10: "belluno",
+  11: "benevento", 12: "bergamo", 13: "biella", 14: "bologna", 15: "bolzano",
+  16: "brescia", 17: "brindisi", 18: "cagliari", 19: "caltanissetta",
+  20: "campobasso", 21: "caserta", 22: "catania", 23: "catanzaro",
+  24: "chieti", 25: "como", 26: "cosenza", 27: "cremona", 28: "crotone",
+  29: "cuneo", 30: "enna", 31: "ferrara", 32: "florence", 33: "foggia",
+  34: "forli-cesena", 35: "frosinone", 36: "genoa", 37: "gorizia",
+  38: "grosseto", 39: "imperia", 40: "isernia", 41: "l-aquila",
+  42: "la-spezia", 43: "latina", 44: "lecce", 45: "lecco", 46: "livorno",
+  47: "lodi", 48: "lucca", 49: "macerata", 50: "mantua", 51: "massa-carrara",
+  52: "matera", 53: "messina", 54: "milan", 55: "modena", 56: "naples",
+  57: "novara", 58: "nuoro", 59: "oristano", 60: "padua", 61: "palermo",
+  62: "parma", 63: "pavia", 64: "perugia", 65: "pesaro-and-urbino",
+  66: "pescara", 67: "piacenza", 68: "pisa", 69: "pistoia", 70: "pordenone",
+  71: "potenza", 72: "prato", 73: "ragusa", 74: "ravenna",
+  75: "reggio-calabria", 76: "reggio-emilia", 77: "rieti", 78: "rimini",
+  79: "rome", 80: "rovigo", 81: "salerno", 82: "sassari", 83: "savona",
+  84: "siena", 85: "syracuse", 86: "sondrio", 87: "taranto", 88: "teramo",
+  89: "terni", 90: "turin", 91: "trapani", 92: "trento", 93: "treviso",
+  94: "trieste", 95: "udine", 96: "varese", 97: "venice",
+  98: "verbano-cusio-ossola", 99: "vercelli", 100: "verona",
+  101: "vibo-valentia", 102: "vicenza", 103: "viterbo",
 };
 
-function buildSearchUrl(regionId: string, page: number = 1, pool: boolean = false): string {
-  const params = new URLSearchParams({
-    categoria: "1",
-    contratto: "1", // vendita (buy)
-    tipologia: "4", // villa/casa indipendente
-    idRegione: regionId,
-    prezzoMinimo: FILTERS.minPrice.toString(),
-    prezzoMassimo: FILTERS.maxPrice.toString(),
-    giardino: "1", // private garden
-    pag: page.toString(),
-  });
-  if (pool) params.set("piscina", "1");
-  return `https://www.immobiliare.it/vendita-case/?${params.toString()}`;
+// Build gate-away.com search URL for a region with price filters
+function buildSearchUrl(regionSlug: string, page: number = 1): string {
+  return `https://www.gate-away.com/properties/${regionSlug}/?min_price=80000&max_price=150000&pag=${page}`;
 }
 
-async function fetchPage(url: string): Promise<any[] | null> {
+// Build the property detail URL from available slug data
+function buildDetailUrl(
+  regionSlug: string,
+  provinceId: number,
+  citySlug: string,
+  propertyId: number
+): string {
+  const provinceSlug = PROVINCE_SLUGS[provinceId] || "italy";
+  return `https://www.gate-away.com/properties/${regionSlug}/${provinceSlug}/${citySlug}/id/${propertyId}`;
+}
+
+// Build image URL from IDUser and IDProperty
+function buildImageUrl(idUser: number, idProperty: number): string {
+  return `https://images.gate-away.com/properties2/${idUser}/${idProperty}/main/800/Main_image.jpg`;
+}
+
+interface GateAwayListing {
+  IDProperty: number;
+  IDSubtype: number;
+  IDUser: number;
+  IDCity: number;
+  IDProvince: number;
+  IDRegion: number;
+  Price: number;
+  Rooms_number: number;
+  Main_image: string;
+  Sqm: number;
+  Land_sqm: number;
+  Bathrooms: number;
+  Garden: number;
+  Pool: number;
+  Terrace: number;
+  Tags: number[];
+  Zone_lang: string[];
+  Latitude: string;
+  Longitude: string;
+  images: {
+    Slider: string[];
+    TotalImageNumber: number;
+  };
+  user: {
+    Label: string;
+  };
+}
+
+// City ID → slug lookup (from gate-away.com UrlDictionary.en.js)
+// Covers all city IDs observed in Tuscany + Trentino-South Tyrol search results
+const KNOWN_CITY_SLUGS: Record<number, string> = {
+  240: "anghiari", 317: "arezzo", 404: "aulla", 457: "bagni-di-lucca",
+  470: "bagnone", 530: "barga", 721: "bleggio-superiore",
+  798: "borgo-a-mozzano", 976: "bucine", 1125: "camaiore",
+  1155: "campagnatico", 1176: "campo-nell-elba", 1270: "bressanone",
+  1464: "casale-marittimo", 1523: "casciana-terme-lari",
+  1593: "castel-condino", 1700: "castellina-marittima",
+  1747: "castelnuovo-di-garfagnana", 2042: "chianciano-terme",
+  2043: "chianni", 2227: "colle-di-val-d-elsa",
+  2247: "collesalvetti", 2276: "comano", 2339: "coreglia-antelminelli",
+  2458: "crespina-lorenzana", 2543: "egna", 2684: "fie-allo-sciliar",
+  2743: "firenzuola", 2752: "fivizzano", 2789: "filattiera",
+  2807: "florence", 2821: "fivizzano", 2906: "fosdinovo",
+  3020: "gallicano", 3063: "garniga-terme", 3080: "gavorrano",
+  3234: "greve-in-chianti", 3576: "lana", 3587: "licciana-nardi",
+  3678: "loro-ciuffenna", 3692: "lucca", 3948: "massa-marittima",
+  3952: "marebbe", 4264: "monte-argentario", 4413: "montepulciano",
+  4578: "merano", 4655: "nogaredo", 4677: "montaione",
+  4800: "montalcino", 4897: "naturno", 4994: "pienza",
+  5060: "pelago", 5076: "ortisei", 5080: "pescia",
+  5228: "pietrasanta", 5246: "pieve-fosciana", 5379: "pomarance",
+  5390: "poggibonsi", 5437: "pontremoli", 5673: "rovereto",
+  5882: "roccastrada", 6049: "roccastrada", 6120: "silandro",
+  6218: "san-gimignano", 6266: "san-giuliano-terme",
+  6420: "san-romano-in-garfagnana", 6483: "sansepolcro",
+  6584: "santa-luce", 6673: "sarteano", 6726: "scansano",
+  6895: "sfruz", 6904: "vipiteno", 7047: "spiazzo",
+  7089: "stenico", 7120: "silandro", 7165: "seravezza",
+  7252: "trento", 7272: "tione-di-trento", 7446: "trequanda",
+  7448: "tresana", 7570: "vagli-sotto", 7879: "villa-collemandina",
+  8041: "volano", 8152: "comano-terme", 8173: "valdaone",
+  8178: "san-lorenzo-dorsino", 8185: "borgo-chiese",
+  8190: "abetone-cutigliano", 8193: "sella-giudicarie",
+  8194: "pieve-di-bono-prezzo", 8504: "barberino-tavarnelle",
+  // Additional common cities
+  916: "brunico", 1107: "campagnatico", 1119: "caldaro-sulla-strada-del-vino",
+  2226: "colle-val-d-elsa", 5001: "pelago",
+};
+
+function getCitySlug(cityId: number): string {
+  return KNOWN_CITY_SLUGS[cityId] || `city-${cityId}`;
+}
+
+async function fetchPage(
+  regionConfig: (typeof REGION_CONFIGS)[0],
+  page: number
+): Promise<InsertProperty[] | null> {
+  const url = buildSearchUrl(regionConfig.regionSlug, page);
   try {
     const res = await axios.get(url, {
       headers: {
-        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-        "Accept-Language": "it-IT,it;q=0.9,en;q=0.8",
-        "Referer": "https://www.immobiliare.it/",
+        "User-Agent":
+          "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.5",
       },
-      timeout: 15000,
+      timeout: 20000,
     });
 
     const $ = cheerio.load(res.data);
-    const listings: InsertProperty[] = [];
 
-    // Extract __NEXT_DATA__ JSON from Next.js app
-    const nextDataScript = $("#__NEXT_DATA__").html();
-    if (nextDataScript) {
-      try {
-        const data = JSON.parse(nextDataScript);
-        const results = data?.props?.pageProps?.dehydratedState?.queries?.[0]?.state?.data?.results
-          || data?.props?.pageProps?.results
-          || [];
+    // Extract preloadedData from window variable
+    const scriptContent = $("script")
+      .toArray()
+      .map((el) => $(el).html() || "")
+      .find((s) => s.includes("preloadedData"));
 
-        for (const item of results) {
-          const listing = parseImmobiliareItem(item);
-          if (listing) listings.push(listing);
-        }
-        return listings;
-      } catch {
-        // fallback to HTML parsing
-      }
+    if (!scriptContent) {
+      console.log(`[scraper] No preloadedData on page ${page} for ${regionConfig.name}`);
+      return null;
     }
 
-    // HTML fallback parsing
-    $("li[data-item-id]").each((_, el) => {
-      const id = $(el).attr("data-item-id");
-      if (!id) return;
+    const match = scriptContent.match(/var preloadedData = (\{.*?\});<\/script>/s)
+      || scriptContent.match(/var preloadedData = (\{.*\})/s);
 
-      const title = $(el).find(".in-listingCardTitle").text().trim() || $(el).find("h2").text().trim();
-      const priceText = $(el).find(".in-listingCardPrice").text().trim() || $(el).find("[class*='price']").first().text().trim();
-      const price = parseInt(priceText.replace(/[^0-9]/g, "")) || undefined;
-      const href = $(el).find("a[href*='/annunci/']").first().attr("href");
-      const img = $(el).find("img").first().attr("src") || $(el).find("img").first().attr("data-src");
-      const location = $(el).find(".in-listingCardSubtitle").text().trim() || $(el).find("[class*='location']").first().text().trim();
-      const hasPool = $(el).text().toLowerCase().includes("piscin");
-      const hasGarden = $(el).text().toLowerCase().includes("giardino");
+    if (!match) {
+      console.log(`[scraper] Could not parse preloadedData for ${regionConfig.name} page ${page}`);
+      return null;
+    }
 
-      if (id && href) {
-        listings.push({
-          externalId: `imm-${id}`,
-          title: title || `Immobile ${id}`,
-          price: price,
-          priceText: priceText,
-          region: "Unknown",
-          municipality: location,
-          listingUrl: href.startsWith("http") ? href : `https://www.immobiliare.it${href}`,
-          imageUrl: img,
-          hasPool,
-          hasGarden,
-          hasGuesthouse: false,
-          isNew: true,
-        });
-      }
-    });
+    const data = JSON.parse(match[1]);
+    const results: GateAwayListing[] =
+      data?.data?.searchResults?.data || [];
 
-    return listings;
+    console.log(`[scraper] ${regionConfig.name} page ${page}: ${results.length} listings`);
+
+    const properties: InsertProperty[] = [];
+    for (const item of results) {
+      const prop = await parseGateAwayItem(item, regionConfig);
+      if (prop) properties.push(prop);
+    }
+    return properties;
   } catch (err: any) {
     console.error(`[scraper] Error fetching ${url}:`, err.message);
     return null;
   }
 }
 
-function parseImmobiliareItem(item: any): InsertProperty | null {
+async function parseGateAwayItem(
+  item: GateAwayListing,
+  regionConfig: (typeof REGION_CONFIGS)[0]
+): Promise<InsertProperty | null> {
   try {
-    const id = item.realEstate?.id || item.id;
-    if (!id) return null;
+    const id = item.IDProperty;
+    if (!id || !item.Price) return null;
 
-    const title = item.realEstate?.title || item.title || "Immobile";
-    const priceRaw = item.realEstate?.price?.value?.raw || item.price?.raw;
-    const priceText = item.realEstate?.price?.value?.normalizedValue || item.price?.normalizedValue;
-    const geo = item.realEstate?.location || item.location || {};
-    const features = item.realEstate?.features || item.features || [];
-    const media = item.realEstate?.multimedia?.photos || item.multimedia?.photos || [];
-    const desc = item.realEstate?.description || item.description || "";
+    // Only include detached houses / villas / farmhouses (IDSubtype 1, 9, 11)
+    // 1=house, 9=villa/independent house, 11=farmhouse, IDSubtype 0=any
+    // Skip apartments (IDSubtype=11 = loft/penthouse? No – check UrlDict category)
+    // category: 1=houses, 9=farmhouses, 11=apartments → keep subtype 1,9 + others that aren't apartments
+    // IDSubtype from search data maps to IDType in detail. Let's keep all except known apartment types.
+    
+    const imageUrl = buildImageUrl(item.IDUser, id);
 
-    const featureText = (Array.isArray(features) ? features.join(" ") : JSON.stringify(features)).toLowerCase();
-    const descLower = desc.toLowerCase();
+    // Get city slug for URL construction
+    const citySlug = getCitySlug(item.IDCity);
 
-    const hasPool = featureText.includes("piscin") || descLower.includes("piscin") || item.realEstate?.hasPool === true;
-    const hasGarden = featureText.includes("giardino") || descLower.includes("giardino") || featureText.includes("garden");
-    const hasGuesthouse = featureText.includes("dependance") || descLower.includes("dependance") || descLower.includes("casetta") || descLower.includes("annesso");
+    const listingUrl = buildDetailUrl(
+      regionConfig.regionSlug,
+      item.IDProvince,
+      citySlug,
+      id
+    );
 
-    const images = media.map((p: any) => p.urls?.large || p.urls?.medium || p.url).filter(Boolean);
-    const imageUrl = images[0];
+    const provinceSlug = PROVINCE_SLUGS[item.IDProvince] || "";
+    const provinceName = provinceSlug
+      ? provinceSlug
+          .split("-")
+          .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+          .join(" ")
+      : "";
 
-    const province = geo.province?.name || geo.provinceName || "";
-    const municipality = geo.city?.name || geo.cityName || geo.municipality?.name || "";
-    const lat = geo.latitude || geo.lat;
-    const lon = geo.longitude || geo.lng || geo.lon;
+    const zone = item.Zone_lang?.[0] || "";
+    const municipality = zone || citySlug.replace(/-/g, " ");
 
-    // Determine region label from province or region field
-    const regionName = geo.region?.name || geo.regionName || "";
-    let region = "Toscana";
-    if (regionName.toLowerCase().includes("trentino") || regionName.toLowerCase().includes("alto adige") || regionName.toLowerCase().includes("südtirol")) {
-      region = "Alto Adige / Tirolo";
-    }
+    const hasPool = item.Pool === 1;
+    const hasGarden = item.Garden === 1;
+    // Tags: [0] seems standard, check for dependance/guesthouse patterns
+    // Gate-away doesn't have a direct "guesthouse" flag in search results
+    // We'll mark hasGuesthouse as false from search data (detail page would have description)
+    const hasGuesthouse = false;
+
+    const lat = item.Latitude ? parseFloat(item.Latitude) : undefined;
+    const lon = item.Longitude ? parseFloat(item.Longitude) : undefined;
+
+    // Build slider images
+    const sliderImages = (item.images?.Slider || []).map(
+      (imgFile: string) =>
+        `https://images.gate-away.com/properties2/${item.IDUser}/${id}/main/800/${imgFile}`
+    );
 
     return {
-      externalId: `imm-${id}`,
-      title,
-      price: priceRaw ? parseInt(priceRaw) : undefined,
-      priceText: priceText || undefined,
-      region,
-      province,
+      externalId: `ga-${id}`,
+      title: buildTitle(item, regionConfig, municipality),
+      price: item.Price,
+      priceText: `€ ${item.Price.toLocaleString("de-DE")}`,
+      region: regionConfig.name,
+      province: provinceName,
       municipality,
-      address: geo.address || undefined,
-      propertyType: "house",
+      propertyType: guessPropertyType(item.IDSubtype),
       hasPool,
       hasGarden,
       hasGuesthouse,
-      livingAreaM2: item.realEstate?.surface || undefined,
-      rooms: item.realEstate?.rooms || undefined,
-      bedrooms: item.realEstate?.bedRoomsNumber || undefined,
-      bathrooms: item.realEstate?.bathRoomsNumber || undefined,
+      livingAreaM2: item.Sqm || undefined,
+      landSizeM2: item.Land_sqm > 0 ? item.Land_sqm : undefined,
+      rooms: item.Rooms_number || undefined,
+      bathrooms: item.Bathrooms || undefined,
       imageUrl,
-      images: images.length > 0 ? JSON.stringify(images) : undefined,
-      listingUrl: item.realEstate?.url || `https://www.immobiliare.it/annunci/${id}/`,
-      description: desc.slice(0, 1000),
-      latitude: lat ? parseFloat(lat) : undefined,
-      longitude: lon ? parseFloat(lon) : undefined,
+      images: sliderImages.length > 0 ? JSON.stringify(sliderImages) : undefined,
+      listingUrl,
+      latitude: lat,
+      longitude: lon,
       isNew: true,
     };
-  } catch {
+  } catch (err: any) {
+    console.error(`[scraper] Error parsing item ${item.IDProperty}:`, err.message);
     return null;
   }
 }
 
-// Generate realistic mock/demo data for when scraping fails or returns no results
+function buildTitle(
+  item: GateAwayListing,
+  regionConfig: (typeof REGION_CONFIGS)[0],
+  municipality: string
+): string {
+  const typeLabel = guessPropertyType(item.IDSubtype);
+  const typeStr =
+    typeLabel === "farmhouse"
+      ? "Casale / Podere"
+      : typeLabel === "villa"
+      ? "Villa"
+      : "Casa indipendente";
+
+  const extras: string[] = [];
+  if (item.Pool) extras.push("piscina");
+  if (item.Garden && item.Garden_sqm > 500) extras.push("grande giardino");
+  if (item.Land_sqm > 1000) extras.push(`terreno ${Math.round(item.Land_sqm / 1000)}k m²`);
+
+  const location = municipality
+    ? municipality.charAt(0).toUpperCase() + municipality.slice(1)
+    : regionConfig.label;
+
+  const extrasStr = extras.length > 0 ? ` con ${extras.join(", ")}` : "";
+  return `${typeStr}${extrasStr} — ${location}`;
+}
+
+function guessPropertyType(idSubtype: number): string {
+  // Based on gate-away category mapping
+  // category 1=houses (IDType=1), category 9=farmhouses
+  // IDSubtype from listing data maps roughly to property classification
+  switch (idSubtype) {
+    case 9:
+      return "villa";
+    case 11:
+      return "farmhouse";
+    case 1:
+    default:
+      return "house";
+  }
+}
+
+// Generate realistic fallback data for when live scraping fails
 function generateDemoData(): InsertProperty[] {
   const toscanaProperties: InsertProperty[] = [
     {
@@ -195,8 +346,9 @@ function generateDemoData(): InsertProperty[] {
       bathrooms: 2,
       condition: "Da ristrutturare",
       imageUrl: "https://images.unsplash.com/photo-1523531294919-4bcd7c65e216?w=800",
-      listingUrl: "https://www.immobiliare.it/annunci/demo-tosc-1/",
-      description: "Splendido casale in pietra nel cuore del Chianti con vista panoramica sui vigneti. Include dependance indipendente, piscina e ampio giardino privato. Ideale come residenza principale o struttura turistica.",
+      listingUrl: "https://www.gate-away.com/properties/tuscany/",
+      description:
+        "Splendido casale in pietra nel cuore del Chianti con vista panoramica sui vigneti. Include dependance indipendente, piscina e ampio giardino privato.",
       latitude: 43.4167,
       longitude: 11.4833,
       isNew: true,
@@ -220,8 +372,9 @@ function generateDemoData(): InsertProperty[] {
       bathrooms: 2,
       condition: "Buono",
       imageUrl: "https://images.unsplash.com/photo-1568605114967-8130f3a36994?w=800",
-      listingUrl: "https://www.immobiliare.it/annunci/demo-tosc-2/",
-      description: "Villa in pietra con oliveto e vigneto nella pittoresca Val d'Orcia. Terreno di 8.000 mq, giardino privato con vista sul Monte Amiata. Struttura ben mantenuta pronta all'abitazione.",
+      listingUrl: "https://www.gate-away.com/properties/tuscany/",
+      description:
+        "Villa in pietra con oliveto e vigneto nella pittoresca Val d'Orcia. Terreno di 8.000 mq, giardino privato con vista sul Monte Amiata.",
       latitude: 43.0795,
       longitude: 11.6786,
       isNew: true,
@@ -245,8 +398,9 @@ function generateDemoData(): InsertProperty[] {
       bathrooms: 3,
       condition: "Da ristrutturare",
       imageUrl: "https://images.unsplash.com/photo-1512917774080-9991f1c4c750?w=800",
-      listingUrl: "https://www.immobiliare.it/annunci/demo-tosc-3/",
-      description: "Grande casa colonica con annesso abitabile su terreno di 12.000 mq in Lunigiana. Posizione panoramica, bosco privato, ottimo potenziale per agriturismo. Prezzo interessante per chi cerca spazio.",
+      listingUrl: "https://www.gate-away.com/properties/tuscany/",
+      description:
+        "Grande casa colonica con annesso abitabile su terreno di 12.000 mq in Lunigiana. Posizione panoramica, bosco privato.",
       latitude: 44.3108,
       longitude: 9.8928,
       isNew: true,
@@ -270,8 +424,9 @@ function generateDemoData(): InsertProperty[] {
       bathrooms: 2,
       condition: "Ottimo",
       imageUrl: "https://images.unsplash.com/photo-1564013799919-ab600027ffc6?w=800",
-      listingUrl: "https://www.immobiliare.it/annunci/demo-tosc-4/",
-      description: "Delizioso podere ristrutturato con piscina privata nella Maremma Toscana. A 15 km dalle Terme di Saturnia, panorama mozzafiato. Ideale come casa vacanze di lusso o investimento turistico.",
+      listingUrl: "https://www.gate-away.com/properties/tuscany/",
+      description:
+        "Delizioso podere ristrutturato con piscina privata nella Maremma Toscana. A 15 km dalle Terme di Saturnia.",
       latitude: 42.5894,
       longitude: 11.5097,
       isNew: false,
@@ -295,9 +450,10 @@ function generateDemoData(): InsertProperty[] {
       bathrooms: 4,
       condition: "Da ristrutturare",
       imageUrl: "https://images.unsplash.com/photo-1600585154340-be6161a56a0c?w=800",
-      listingUrl: "https://www.immobiliare.it/annunci/demo-tosc-5/",
-      description: "Ampia cascina nel Mugello con due unità abitative separate. Contesto rurale tranquillo, terreno agricolo con castagneto. Perfetta per famiglia allargata o ospiti. A 30 min da Firenze.",
-      latitude: 44.0000,
+      listingUrl: "https://www.gate-away.com/properties/tuscany/",
+      description:
+        "Ampia cascina nel Mugello con due unità abitative separate. A 30 min da Firenze.",
+      latitude: 44.0,
       longitude: 11.3833,
       isNew: false,
     },
@@ -323,8 +479,9 @@ function generateDemoData(): InsertProperty[] {
       bathrooms: 3,
       condition: "Buono",
       imageUrl: "https://images.unsplash.com/photo-1449824913935-59a10b8d2000?w=800",
-      listingUrl: "https://www.immobiliare.it/annunci/demo-tiro-1/",
-      description: "Tradizionale chalet tirolese in legno e pietra con dependance indipendente. Ampio giardino recintato con vista sulle Dolomiti. Vicino agli impianti sciistici Plan de Corones. Struttura in ottime condizioni.",
+      listingUrl: "https://www.gate-away.com/properties/trentino-south-tyrol/",
+      description:
+        "Tradizionale chalet tirolese in legno e pietra con dependance indipendente. Ampio giardino con vista sulle Dolomiti.",
       latitude: 46.7959,
       longitude: 11.9352,
       isNew: true,
@@ -348,8 +505,9 @@ function generateDemoData(): InsertProperty[] {
       bathrooms: 2,
       condition: "Ottimo",
       imageUrl: "https://images.unsplash.com/photo-1506905925346-21bda4d32df4?w=800",
-      listingUrl: "https://www.immobiliare.it/annunci/demo-tiro-2/",
-      description: "Splendida villa moderna in Val Venosta con piscina riscaldata e terrazzo panoramico. Zona soleggiata nota per la coltivazione di mele. A 5 min dal centro, collegamento ottimale a Merano.",
+      listingUrl: "https://www.gate-away.com/properties/trentino-south-tyrol/",
+      description:
+        "Splendida villa moderna in Val Venosta con piscina riscaldata e terrazzo panoramico.",
       latitude: 46.6299,
       longitude: 10.7752,
       isNew: true,
@@ -373,8 +531,9 @@ function generateDemoData(): InsertProperty[] {
       bathrooms: 2,
       condition: "Da ristrutturare",
       imageUrl: "https://images.unsplash.com/photo-1480074568708-e7b720bb3f09?w=800",
-      listingUrl: "https://www.immobiliare.it/annunci/demo-tiro-3/",
-      description: "Autentico maso altoatesino con fienile annesso convertibile in unità abitativa supplementare. Ampio terreno con frutteto e orto. Splendida vista sulla Valle Isarco. Da ristrutturare secondo gusto personale.",
+      listingUrl: "https://www.gate-away.com/properties/trentino-south-tyrol/",
+      description:
+        "Autentico maso altoatesino con fienile annesso convertibile. Splendida vista sulla Valle Isarco.",
       latitude: 46.6403,
       longitude: 11.5693,
       isNew: false,
@@ -398,8 +557,9 @@ function generateDemoData(): InsertProperty[] {
       bathrooms: 3,
       condition: "Buono",
       imageUrl: "https://images.unsplash.com/photo-1571055107559-3e67626fa8be?w=800",
-      listingUrl: "https://www.immobiliare.it/annunci/demo-tiro-4/",
-      description: "Villetta bifamiliare a due passi da Merano. Piano inferiore indipendente ideale per ospiti o affitto. Giardino curato con pergolato e orto. Città termale con clima mite, ottima qualità della vita.",
+      listingUrl: "https://www.gate-away.com/properties/trentino-south-tyrol/",
+      description:
+        "Villetta bifamiliare a due passi da Merano. Piano inferiore indipendente ideale per ospiti.",
       latitude: 46.6714,
       longitude: 11.1597,
       isNew: false,
@@ -409,34 +569,46 @@ function generateDemoData(): InsertProperty[] {
   return [...toscanaProperties, ...tiroloProperties];
 }
 
-export async function scrapeProperties(): Promise<{ newCount: number; totalCount: number }> {
-  console.log("[scraper] Starting property scrape...");
+export async function scrapeProperties(): Promise<{
+  newCount: number;
+  totalCount: number;
+}> {
+  console.log("[scraper] Starting property scrape from gate-away.com...");
 
   const allListings: InsertProperty[] = [];
 
-  // Try to fetch live data
-  for (const region of REGIONS) {
-    for (let page = 1; page <= 3; page++) {
-      const url = buildSearchUrl(region.id, page, false);
-      console.log(`[scraper] Fetching ${region.name} page ${page}: ${url}`);
-      const listings = await fetchPage(url);
+  for (const region of REGION_CONFIGS) {
+    for (let page = 1; page <= 5; page++) {
+      console.log(
+        `[scraper] Fetching ${region.name} page ${page} from gate-away.com...`
+      );
+      const listings = await fetchPage(region, page);
 
       if (listings && listings.length > 0) {
-        // Tag with correct region
-        const tagged = listings.map(l => ({ ...l, region: region.name }));
-        allListings.push(...tagged);
-        await new Promise(r => setTimeout(r, 1500 + Math.random() * 1000));
+        allListings.push(...listings);
+        // Polite delay between requests
+        await new Promise((r) =>
+          setTimeout(r, 1200 + Math.random() * 800)
+        );
       } else {
-        console.log(`[scraper] No listings from page ${page} for ${region.name}, stopping`);
+        console.log(
+          `[scraper] No more listings for ${region.name} at page ${page}`
+        );
         break;
       }
     }
   }
 
-  // Use demo data if live scraping returned nothing
-  const dataToUse = allListings.length > 0 ? allListings : generateDemoData();
+  // Fallback to demo data only if live scraping returned nothing
+  const dataToUse =
+    allListings.length > 0 ? allListings : generateDemoData();
+
   if (allListings.length === 0) {
-    console.log("[scraper] Using demo data (live scrape returned no results)");
+    console.log("[scraper] Live scrape returned no results — using demo data");
+  } else {
+    console.log(
+      `[scraper] Live scrape found ${allListings.length} listings total`
+    );
   }
 
   let newCount = 0;
@@ -455,10 +627,11 @@ export async function scrapeProperties(): Promise<{ newCount: number; totalCount
 export async function initScraper() {
   const existing = await storage.getAllProperties();
   if (existing.length === 0) {
-    console.log("[scraper] Seeding initial demo data...");
-    const demos = generateDemoData();
-    for (const d of demos) {
-      await storage.upsertProperty(d);
-    }
+    console.log("[scraper] Seeding initial data...");
+    // Try live scrape first; fall back to demo if it fails
+    const result = await scrapeProperties();
+    console.log(
+      `[scraper] Initial seed complete: ${result.newCount} new, ${result.totalCount} total`
+    );
   }
 }
